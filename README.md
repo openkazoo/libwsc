@@ -1,6 +1,7 @@
 **libwsc: C++11 WebSocket Client Library**
 
 [![Autobahn TestSuite](https://img.shields.io/badge/Autobahn-passing-brightgreen)](https://amigniter.github.io/libwsc/autobahn/)
+[![Build libwsc](https://github.com/amigniter/libwsc/actions/workflows/ci.yml/badge.svg)](https://github.com/amigniter/libwsc/actions/workflows/ci.yml)
 
 A lightweight, high-performance and fully-compliant WebSocket client written in C++11.
 

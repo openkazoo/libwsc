@@ -261,10 +261,10 @@ private:
     unsigned int connection_timeout = 2;
     struct event *timeout_event = nullptr;
     // Flags
-    std::atomic<bool> cleanup_requested{false};
     std::atomic<bool> cleanup_complete{false};
     // Close
-    bool sent_close_response = false;
+    std::atomic<bool> sent_close{false};
+    std::atomic<bool> got_remote_close{false};
 
     Utf8Validator utf8Validator;
 };

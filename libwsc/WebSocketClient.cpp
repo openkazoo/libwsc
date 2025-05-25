@@ -91,9 +91,7 @@ void WebSocketClient::setUrl(const std::string& url) {
  * - Registers read/write/event callbacks and starts hostname resolution + TCP connect.
  * - Marks the client as running and spawns a dedicated thread to dispatch the event loop.
  */
-void WebSocketClient::connect() {
-    
-    cleanup_requested.store(false);
+void WebSocketClient::connect() {    
     cleanup_complete.store(false);
 
     if (running.load()) {
@@ -253,9 +251,17 @@ void WebSocketClient::disconnect() {
     }
     state_cv.notify_all();
 
+    close(); //send clean close frame
+
+    // give the server up to 2s to reply with its own close frame
+    {
+    std::unique_lock<std::mutex> lk(state_mutex);
+    state_cv.wait_for(lk,
+                      std::chrono::seconds(2),
+                      [&]{ return got_remote_close.load(); });
+    }
 
     if (base && running.load()) {
-        cleanup_requested.store(true);
         //event_base_loopexit(base, nullptr);
         bufferevent_disable(m_bev, EV_READ | EV_WRITE);
         event_base_loopbreak(base);
@@ -338,8 +344,10 @@ bool WebSocketClient::sendData(const void* data,
         return true;
     }
 
-    if (state == ConnectionState::CONNECTED) {
-        if (!upgraded.load()) {
+    if (state == ConnectionState::CONNECTED ||
+         (type == MessageType::CLOSE && state == ConnectionState::DISCONNECTING)) {
+        // only require full upgrade for non-close frames
+        if (type != MessageType::CLOSE && !upgraded.load()) {
             LOG_ERROR("WebSocket not fully upgraded yet");
             return false;
         }
@@ -454,7 +462,10 @@ bool WebSocketClient::close(int code, const std::string& reason) {
     if (!upgraded.load() || !m_bev) {
         LOG_ERROR("Not connected or WebSocket not upgraded");
         return false;
-    }    
+    }
+    if (sent_close.exchange(true)) {
+        return false;
+    }
     // build the payload: 2-byte code (network order) + optional UTF-8 reason
     uint16_t code_be = htons(static_cast<uint16_t>(code));
     std::vector<uint8_t> payload(sizeof(code_be) + reason.size());
@@ -1119,7 +1130,14 @@ void WebSocketClient::handleDataFrame(unsigned char* data, size_t header_len, ui
 void WebSocketClient::handleCloseFrame(unsigned char* data, size_t header_len, uint64_t payload_len) {
     LOG_DEBUG("Received close frame");
 
-    if (!sent_close_response) {
+    //got_remote_close = true;
+    {
+      std::lock_guard<std::mutex> lk(state_mutex);
+      got_remote_close = true;
+    }
+    state_cv.notify_one();
+
+    if (!sent_close) {
         uint16_t close_code = 1000;
         std::string close_reason;
         bool protocol_error = false;
@@ -1170,43 +1188,13 @@ void WebSocketClient::handleCloseFrame(unsigned char* data, size_t header_len, u
             std::lock_guard<std::mutex> lock(callback_mutex);
             callback = close_callback;
         }
-        
         if (callback) {
             callback(close_code, protocol_error ? "Protocol error" : close_reason);
         }
 
-        // Prepare close frame response
-        std::vector<uint8_t> close_payload;
-        if (!protocol_error) {
-            close_payload.resize(2 + close_reason.size());
-            uint16_t code_be = htons(close_code);
-            memcpy(close_payload.data(), &code_be, 2);
-            if (!close_reason.empty()) {
-                memcpy(close_payload.data() + 2, close_reason.data(), close_reason.size());
-            }
-        } else {
-            // For protocol errors, send empty close frame or code 1002
-            close_payload.resize(2);
-            uint16_t code_be = htons(1002);
-            memcpy(close_payload.data(), &code_be, 2);
-        }
-
-        bufferevent_lock(m_bev);
-        evbuffer *output = bufferevent_get_output(m_bev);
-
-        if (output) {
-            send(output, 
-            close_payload.data(), 
-            close_payload.size(), 
-            MessageType::CLOSE);
-
-        } else {
-            LOG_ERROR("Cannot get output buffer");
-        }
-
-        bufferevent_unlock(m_bev);
-
-        sent_close_response = true;
+        int reply_code = protocol_error ? 1002 : static_cast<int>(close_code);
+        std::string reply_reason = protocol_error ? "" : close_reason;
+        close(reply_code, reply_reason);
     }
 }
 
