@@ -9,7 +9,7 @@ Written solely for [mod_audio_stream](https://github.com/amigniter/mod_audio_str
 
 Built on libevent; only zlib (for deflate) and OpenSSL (for TLS) are optional extras.
 
-**libwsc** is now offered as a standalone, fully RFC-6455 and [autobahntestsuite](https://amigniter.github.io/libwsc/autobahn/index.html) compliant asynchronous client library.
+**libwsc** is now offered as a standalone, fully RFC-6455 and [autobahn-testsuite](https://github.com/crossbario/autobahn-testsuite) compliant asynchronous client library. You can find test results [here](https://amigniter.github.io/libwsc/autobahn/index.html) (except test 2.1, we support one ping per-flight)
 
 ---
 
