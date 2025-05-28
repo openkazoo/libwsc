@@ -176,7 +176,6 @@ private:
     std::thread* event_thread;
     
     // Mutexes for different purposes
-    std::mutex cleanup_mutex;       // Protects cleanup operations
     std::mutex callback_mutex;      // Protects message callback
     std::mutex state_mutex;         // Protects connection state
 

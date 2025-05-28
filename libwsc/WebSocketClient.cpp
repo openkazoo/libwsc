@@ -251,29 +251,75 @@ void WebSocketClient::disconnect() {
     }
     state_cv.notify_all();
 
-    close(); //send clean close frame
-
-    // give the server up to 2s to reply with its own close frame
-    {
-    std::unique_lock<std::mutex> lk(state_mutex);
-    state_cv.wait_for(lk,
-                      std::chrono::seconds(2),
-                      [&]{ return got_remote_close.load(); });
+    // send clean Close frame (if possible) and wait briefly for peer reply
+    bool sentClose = close();
+    if (sentClose) {
+        std::unique_lock<std::mutex> lk(state_mutex);
+        state_cv.wait_for(lk,
+                        std::chrono::seconds(2),
+                        [&]{ return got_remote_close.load(); });
     }
 
     if (base && running.load()) {
-        //event_base_loopexit(base, nullptr);
+        bufferevent_lock(m_bev);
         bufferevent_disable(m_bev, EV_READ | EV_WRITE);
-        event_base_loopbreak(base);
+        // schedule a zero-timeout no-op so the loop definitely wakes
+        struct timeval zero = {0,0};
+        event_base_once(base,
+                        /*fd*/-1,
+                        EV_TIMEOUT,
+                        /*cb*/ [](evutil_socket_t, short, void*) {
+                        LOG_DEBUG("zero-timeout callback fired");
+                        },
+                        /*arg*/ nullptr,
+                        &zero);
+        event_base_loopexit(base, nullptr);
+        bufferevent_unlock(m_bev);
     }
 
-    if (event_thread) {
-        if (event_thread->joinable()) {
-            event_thread->join();
+    auto self = this;
+    auto evId = event_thread ? event_thread->get_id() : std::thread::id{};
+    auto meId = std::this_thread::get_id();
+
+    // If the shutdown is happening from *inside* our event‐loop thread,
+    // we cannot join that same thread—it would deadlock or crash.
+    // So we defer the actual join+cleanup to a helper thread
+    if (event_thread && meId == evId) {
+      LOG_DEBUG("disconnect: on event thread—deferring join+cleanup");
+      std::thread([self](){
+        // Wait for the loop to actually stop
+        while (self->running.load()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        delete event_thread;
-        event_thread = nullptr;
+
+        if (self->event_thread && self->event_thread->joinable()) {
+          self->event_thread->join();
+        }
+        delete self->event_thread;
+        self->event_thread = nullptr;
+
+        self->cleanup();
+        {
+          std::lock_guard<std::mutex> lk(self->state_mutex);
+          self->connection_state = ConnectionState::DISCONNECTED;
+        }
+        self->state_cv.notify_all();
+
+        LOG_DEBUG("disconnect: deferred exit");
+      }).detach();
+
+      return;
     }
+
+    // Otherwise—called from a non‐event thread—do the normal join+cleanup
+    if (event_thread && event_thread->joinable() ) {
+      LOG_DEBUG("Waiting for event thread to join...");
+      event_thread->join();
+      LOG_DEBUG("Event thread joined");
+    }
+
+    delete event_thread;
+    event_thread = nullptr;
 
     cleanup();
 
@@ -535,9 +581,14 @@ void WebSocketClient::sendHandshakeRequest() {
  *  - Closing of zlib inflate/deflate streams
  *  - Resetting of internal flags (upgraded, running)
  *  - Transitioning connection state to DISCONNECTED and notifying waiters
+ * 
+ * \note Called both on connect-failure (before the event loop
+ *      ever starts) and on normal teardown (after the event loop has
+ *      been cleanly exited and joined).  In neither case is dispatch()
+ *      running, so there is no concurrent access to bufferevent or base,
+ *      and we can free them without locking.
  */
 void WebSocketClient::cleanup() {
-    //std::lock_guard<std::mutex> lock(cleanup_mutex);
     if (cleanup_complete.load()) return;
     cleanup_complete.store(true);
 
@@ -556,7 +607,7 @@ void WebSocketClient::cleanup() {
 
     // Clean up bufferevent
     if (m_bev) {
-        //bufferevent_lock(m_bev);
+        // bufferevent_lock(m_bev);
         // For SSL, we need to do proper shutdown
         if (secure) {
 #ifdef USE_TLS
