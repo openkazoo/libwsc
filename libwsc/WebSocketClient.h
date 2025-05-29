@@ -240,7 +240,7 @@ private:
     int  server_max_window_bits = 15;
 
     // Connection states
-    ConnectionState connection_state = ConnectionState::DISCONNECTED;
+    std::atomic<ConnectionState> connection_state{ConnectionState::DISCONNECTED};
     std::condition_variable state_cv;
 
 #ifdef USE_TLS

@@ -146,11 +146,7 @@ void WebSocketClient::connect() {
 #endif
     }
 
-    {
-        std::unique_lock<std::mutex> lock(state_mutex);
-        connection_state = ConnectionState::CONNECTING;
-    }
-    state_cv.notify_all();
+    connection_state.store(ConnectionState::CONNECTING, std::memory_order_release);
 
     base = event_base_new();
     if (!base) {
@@ -240,16 +236,14 @@ void WebSocketClient::connect() {
  */
 void WebSocketClient::disconnect() {
     log_debug("disconnect: entering");
-    {
-        std::lock_guard<std::mutex> lk(state_mutex);
-        if (connection_state == ConnectionState::DISCONNECTING ||
-            connection_state == ConnectionState::DISCONNECTED) {
-            log_debug("disconnect: early exit");
-            return;
-        }
-        connection_state = ConnectionState::DISCONNECTING;
+
+    auto current_state = connection_state.load(std::memory_order_acquire);
+    if (current_state == ConnectionState::DISCONNECTING || current_state == ConnectionState::DISCONNECTED) {
+        log_debug("disconnect: early exit");
+        return;
     }
-    state_cv.notify_all();
+
+    connection_state.store(ConnectionState::DISCONNECTING, std::memory_order_release);
 
     // send clean Close frame (if possible) and wait briefly for peer reply
     bool sentClose = close();
@@ -299,11 +293,8 @@ void WebSocketClient::disconnect() {
         self->event_thread = nullptr;
 
         self->cleanup();
-        {
-          std::lock_guard<std::mutex> lk(self->state_mutex);
-          self->connection_state = ConnectionState::DISCONNECTED;
-        }
-        self->state_cv.notify_all();
+
+        self->connection_state.store(ConnectionState::DISCONNECTED, std::memory_order_release);
 
         log_debug("disconnect: deferred exit");
       }).detach();
@@ -323,11 +314,7 @@ void WebSocketClient::disconnect() {
 
     cleanup();
 
-    {
-        std::lock_guard<std::mutex> lk(state_mutex);
-        connection_state = ConnectionState::DISCONNECTED;
-    }
-    state_cv.notify_all();
+    connection_state.store(ConnectionState::DISCONNECTED, std::memory_order_release);
 
     log_debug("disconnect: exited");
 }
@@ -337,9 +324,9 @@ void WebSocketClient::disconnect() {
  *        This allows sendData to enqueue frames during the handshake.
  */
 bool WebSocketClient::isConnected() {
-    std::lock_guard<std::mutex> lock(state_mutex);
-    return connection_state == ConnectionState::CONNECTING
-        || connection_state == ConnectionState::CONNECTED;
+    auto current_state = connection_state.load(std::memory_order_acquire);
+    return current_state == ConnectionState::CONNECTING
+        || current_state == ConnectionState::CONNECTED;
 }
 
 /**
@@ -361,11 +348,7 @@ bool WebSocketClient::sendData(const void* data,
         return false;
     }
 
-    ConnectionState state;
-    {
-        std::lock_guard<std::mutex> sl(state_mutex);
-        state = connection_state;
-    }
+    ConnectionState state = connection_state.load(std::memory_order_acquire);
 
     // Queue
     if (state == ConnectionState::CONNECTING) {
@@ -651,12 +634,6 @@ void WebSocketClient::cleanup() {
 
     upgraded.store(false);
     running.store(false);
-
-    {
-        std::unique_lock<std::mutex> lock(state_mutex);
-        connection_state = ConnectionState::DISCONNECTED;
-    }
-    state_cv.notify_all();
 
     log_debug("cleanup: exiting");
 }
@@ -1327,11 +1304,9 @@ void WebSocketClient::pingCallback(evutil_socket_t /*fd*/, short /*event*/, void
 void WebSocketClient::timeoutCallback(evutil_socket_t /*fd*/, short /*event*/, void *arg) {
     WebSocketClient* client = static_cast<WebSocketClient*>(arg);
 
-    std::lock_guard<std::mutex> lock(client->state_mutex);
-        
-    if (client->connection_state != ConnectionState::CONNECTED &&
-        client->connection_state != ConnectionState::FAILED) {
-        log_error("Connection timeout");
+    auto state = client->connection_state.load(std::memory_order_acquire);
+    if (state != ConnectionState::CONNECTED && state != ConnectionState::FAILED) {
+        //log_error("Connection timeout");
         client->sendError(ErrorCode::CONNECT_FAILED, "Connection timeout");
     }
 }
@@ -1385,11 +1360,7 @@ void WebSocketClient::handleRead(bufferevent* bev) {
             resp.find("Sec-WebSocket-Accept:") == std::string::npos)
         {
             log_error("WebSocket upgrade failed");
-            {
-                std::lock_guard<std::mutex> lock(state_mutex);
-                connection_state = ConnectionState::FAILED;
-            }
-            state_cv.notify_all();
+            connection_state.store(ConnectionState::FAILED, std::memory_order_release);
             sendError(ErrorCode::CONNECT_FAILED, "WebSocket upgrade failed");
             evbuffer_drain(input, len);
             return;
@@ -1440,11 +1411,8 @@ void WebSocketClient::handleRead(bufferevent* bev) {
         // Drain HTTP headers only (leave any WS frames)
         evbuffer_drain(input, headerBytes);
         upgraded.store(true);
-        {
-            std::lock_guard<std::mutex> lock(state_mutex);
-            connection_state = ConnectionState::CONNECTED;
-        }
-        state_cv.notify_all();
+        
+        connection_state.store(ConnectionState::CONNECTED, std::memory_order_release);
 
         // Send Pending Queue
         log_debug("Flushing %zu queued messages…", send_queue.size());
@@ -1563,11 +1531,7 @@ void WebSocketClient::handleEvent(bufferevent* bev, short events) {
                 log_error("TLS error: %.240s", err_buf);
                 message = err_buf;
                 sendError(ErrorCode::SSL_ERROR, message);
-                {
-                    std::lock_guard<std::mutex> lock(state_mutex);
-                    connection_state = new_state;
-                }
-                state_cv.notify_all();
+                connection_state.store(new_state, std::memory_order_release);
                 return;
             }
 #endif
@@ -1581,11 +1545,7 @@ void WebSocketClient::handleEvent(bufferevent* bev, short events) {
         log_error("%s", message.c_str());
         sendError(ErrorCode::IO, message);
 
-        {
-            std::lock_guard<std::mutex> lock(state_mutex);
-            connection_state = new_state;
-        }
-        state_cv.notify_all();
+        connection_state.store(new_state, std::memory_order_release);
         
     } else if (events & BEV_EVENT_EOF) {
 
@@ -1597,11 +1557,7 @@ void WebSocketClient::handleEvent(bufferevent* bev, short events) {
 
         log_debug("%s", message.c_str());
 
-        {
-            std::lock_guard<std::mutex> lock(state_mutex);
-            connection_state = new_state;
-        }
-        state_cv.notify_all();
+        connection_state.store(new_state, std::memory_order_release);
 
         CloseCallback callback;
         {
