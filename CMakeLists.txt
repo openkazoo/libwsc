@@ -14,7 +14,7 @@ set (CMAKE_CXX_STANDARD 11)
 set (CXX_STANDARD_REQUIRED ON)
 
 option(USE_TLS "Enable TLS/SSL support using OpenSSL" OFF)
-option(USE_DEBUG "Enable debug output" OFF)
+option(LIBWSC_USE_DEBUG "Enable debug (verbose) output" OFF)
 option(BUILD_SHARED_LIBS "Build shared libraries instead of static ones" OFF)
 
 set(LIBEVENT_COMPONENTS libevent pthreads)
@@ -27,8 +27,6 @@ endif()
 find_package(Libevent REQUIRED COMPONENTS ${LIBEVENT_COMPONENTS})
 find_package(ZLIB REQUIRED)
 
-# include_directories(${LIBEVENT_INCLUDE_DIRS})
-
 if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -39,7 +37,6 @@ endif()
 
 set (LIBWSC_SOURCES 
   libwsc/WebSocketClient.cpp 
-  libwsc/Logger.cpp 
   libwsc/Utf8Validator.cpp 
   libwsc/base64.cpp)
 set (LIBWSC_HEADERS 
@@ -68,8 +65,8 @@ target_link_libraries(libwsc
     ZLIB::ZLIB
 )
 
-if (USE_DEBUG)
-    target_compile_definitions(libwsc PRIVATE USE_DEBUG)
+if (LIBWSC_USE_DEBUG)
+    target_compile_definitions(libwsc PRIVATE LIBWSC_USE_DEBUG)
 endif()
 
 if (USE_TLS)

@@ -18,7 +18,7 @@ WebSocketClient::WebSocketClient()
         : secure(false), upgraded(false), running(false), base(nullptr), dns_base(nullptr), m_bev(nullptr), event_thread(nullptr) {
         key = getWebSocketKey(); //dGhlIHNhbXBsZSBub25jZQ==
         accept = computeAccept(key); //s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
-        LOG_DEBUG("Computed accept: %s", accept.c_str());
+        log_debug("Computed accept: %s", accept.c_str());
         evthread_use_pthreads();
 }
 
@@ -26,9 +26,9 @@ WebSocketClient::WebSocketClient()
  * \brief Destructor ensures the client is cleanly disconnected and all resources freed.
  */
 WebSocketClient::~WebSocketClient() {
-    //LOG_DEBUG("destructor entered");
+    //log_debug("destructor entered");
     disconnect();
-    //LOG_DEBUG("destructor exited");
+    //log_debug("destructor exited");
 }
 
 /**
@@ -51,7 +51,7 @@ void WebSocketClient::setUrl(const std::string& url) {
         secure = true;
         pos = wss_scheme.size();
     } else {
-        LOG_ERROR("URL must start with ws:// or wss://");
+        log_error("URL must start with ws:// or wss://");
         return;
     }
 
@@ -64,7 +64,7 @@ void WebSocketClient::setUrl(const std::string& url) {
         try {
             port = std::stoi(hostport.substr(colon_pos + 1));
         } catch (const std::exception& e) {
-            //LOG_ERROR("Invalid port in URL: %s", e.what());
+            //log_error("Invalid port in URL: %s", e.what());
             return;
         }
     } else {
@@ -73,7 +73,7 @@ void WebSocketClient::setUrl(const std::string& url) {
     }
 
     if (host.empty()) {
-        LOG_ERROR("Host is empty in URL");
+        log_error("Host is empty in URL");
         return;
     }
 
@@ -95,12 +95,12 @@ void WebSocketClient::connect() {
     cleanup_complete.store(false);
 
     if (running.load()) {
-        LOG_DEBUG("Already connected or connecting");
+        log_debug("Already connected or connecting");
         return;
     }
 
     if (host.empty() || port <=0) {
-        LOG_ERROR("setUrl() must be called before connect(): invalid host or port");
+        log_error("setUrl() must be called before connect(): invalid host or port");
         sendError(ErrorCode::CONNECT_FAILED, "Invalid host or port");
         return;
     }
@@ -121,7 +121,7 @@ void WebSocketClient::connect() {
 
         if (!ssl) {
             SSL_CTX_free(ctx);
-            LOG_ERROR("SSL_new() failed");
+            log_error("SSL_new() failed");
             sendError(ErrorCode::TLS_INIT_FAILED, "SSL context creation failed");
             return;
         }
@@ -131,7 +131,7 @@ void WebSocketClient::connect() {
             if (param) {
                 int ret = X509_VERIFY_PARAM_set1_host(param, host.c_str(), 0);  // No port matching
                 if (ret != 1) {
-                    LOG_ERROR("Failed to set hostname for verification");
+                    log_error("Failed to set hostname for verification");
                     sendError(ErrorCode::TLS_INIT_FAILED, "Hostname verification setup failed.");
                     SSL_free(ssl);
                     SSL_CTX_free(ctx);
@@ -141,7 +141,7 @@ void WebSocketClient::connect() {
             }
         }
 #else 
-        LOG_ERROR("TLS support not compiled in (USE_TLS=OFF), proceeding in insecure mode");
+        log_error("TLS support not compiled in (USE_TLS=OFF), proceeding in insecure mode");
         secure = false;
 #endif
     }
@@ -154,14 +154,14 @@ void WebSocketClient::connect() {
 
     base = event_base_new();
     if (!base) {
-        LOG_ERROR("Failed to create event_base");
+        log_error("Failed to create event_base");
         sendError(ErrorCode::IO, "Failed to create event_base");
         return;
     }
 
     dns_base = evdns_base_new(base, 1);
     if (!dns_base) {
-        LOG_ERROR("Failed to create DNS base");
+        log_error("Failed to create DNS base");
         event_base_free(base);
         base = nullptr;
         sendError(ErrorCode::IO, "Failed to create DNS base");
@@ -172,7 +172,7 @@ void WebSocketClient::connect() {
 #ifdef USE_TLS
         m_bev = bufferevent_openssl_socket_new(base, -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE | BEV_OPT_DEFER_CALLBACKS);
         if (!m_bev) {
-            LOG_ERROR("Failed to create secure bufferevent");
+            log_error("Failed to create secure bufferevent");
             cleanup();
             sendError(ErrorCode::IO, "Failed to create secure bufferevent");
             return;
@@ -181,7 +181,7 @@ void WebSocketClient::connect() {
     } else {
         m_bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE | BEV_OPT_DEFER_CALLBACKS | BEV_OPT_THREADSAFE);
         if (!m_bev) {
-            LOG_ERROR("Failed to create bufferevent");
+            log_error("Failed to create bufferevent");
             cleanup();
             sendError(ErrorCode::IO, "Failed to create bufferevent");
             return;
@@ -209,7 +209,7 @@ void WebSocketClient::connect() {
     bufferevent_enable(m_bev, EV_READ|EV_WRITE);
 
     if (bufferevent_socket_connect_hostname(m_bev, dns_base, AF_INET, host.c_str(), port) < 0) {
-        LOG_ERROR("Failed to start connection");
+        log_error("Failed to start connection");
         cleanup();
         sendError(ErrorCode::CONNECT_FAILED, "Failed to start connection");
         return;
@@ -220,10 +220,10 @@ void WebSocketClient::connect() {
     event_thread = new std::thread([this]() {
         int ret = event_base_dispatch(base);
         if (ret == -1) {
-            LOG_ERROR("Event base dispatch failed");
+            log_error("Event base dispatch failed");
         }
 
-        LOG_DEBUG("Event loop exited");
+        log_debug("Event loop exited");
         
         running.store(false);
     });
@@ -239,12 +239,12 @@ void WebSocketClient::connect() {
  * - Finally, sets state to DISCONNECTED and notifies waiters again.
  */
 void WebSocketClient::disconnect() {
-    LOG_DEBUG("disconnect: entering");
+    log_debug("disconnect: entering");
     {
         std::lock_guard<std::mutex> lk(state_mutex);
         if (connection_state == ConnectionState::DISCONNECTING ||
             connection_state == ConnectionState::DISCONNECTED) {
-            LOG_DEBUG("disconnect: early exit");
+            log_debug("disconnect: early exit");
             return;
         }
         connection_state = ConnectionState::DISCONNECTING;
@@ -269,7 +269,7 @@ void WebSocketClient::disconnect() {
                         /*fd*/-1,
                         EV_TIMEOUT,
                         /*cb*/ [](evutil_socket_t, short, void*) {
-                        LOG_DEBUG("zero-timeout callback fired");
+                        log_debug("zero-timeout callback fired");
                         },
                         /*arg*/ nullptr,
                         &zero);
@@ -285,7 +285,7 @@ void WebSocketClient::disconnect() {
     // we cannot join that same thread—it would deadlock or crash.
     // So we defer the actual join+cleanup to a helper thread
     if (event_thread && meId == evId) {
-      LOG_DEBUG("disconnect: on event thread—deferring join+cleanup");
+      log_debug("disconnect: on event thread—deferring join+cleanup");
       std::thread([self](){
         // Wait for the loop to actually stop
         while (self->running.load()) {
@@ -305,7 +305,7 @@ void WebSocketClient::disconnect() {
         }
         self->state_cv.notify_all();
 
-        LOG_DEBUG("disconnect: deferred exit");
+        log_debug("disconnect: deferred exit");
       }).detach();
 
       return;
@@ -313,9 +313,9 @@ void WebSocketClient::disconnect() {
 
     // Otherwise—called from a non‐event thread—do the normal join+cleanup
     if (event_thread && event_thread->joinable() ) {
-      LOG_DEBUG("Waiting for event thread to join...");
+      log_debug("Waiting for event thread to join...");
       event_thread->join();
-      LOG_DEBUG("Event thread joined");
+      log_debug("Event thread joined");
     }
 
     delete event_thread;
@@ -329,7 +329,7 @@ void WebSocketClient::disconnect() {
     }
     state_cv.notify_all();
 
-    LOG_DEBUG("disconnect: exited");
+    log_debug("disconnect: exited");
 }
 
 /**
@@ -357,7 +357,7 @@ bool WebSocketClient::sendData(const void* data,
                                size_t length,
                                MessageType type) {
     if (!m_bev) {
-        LOG_ERROR("No bufferevent—cannot send");
+        log_error("No bufferevent—cannot send");
         return false;
     }
 
@@ -371,7 +371,7 @@ bool WebSocketClient::sendData(const void* data,
     if (state == ConnectionState::CONNECTING) {
         std::lock_guard<std::mutex> lk(send_queue_mutex);
         if (send_queue.size() >= MAX_QUEUE_SIZE) {
-            LOG_ERROR("Send queue full—dropping packet");
+            log_error("Send queue full—dropping packet");
             return false;
         }
         if (type == MessageType::TEXT) {
@@ -386,7 +386,7 @@ bool WebSocketClient::sendData(const void* data,
                 )
             );
         }
-        LOG_DEBUG("Queued %zu bytes during CONNECTING", length);
+        log_debug("Queued %zu bytes during CONNECTING", length);
         return true;
     }
 
@@ -394,7 +394,7 @@ bool WebSocketClient::sendData(const void* data,
          (type == MessageType::CLOSE && state == ConnectionState::DISCONNECTING)) {
         // only require full upgrade for non-close frames
         if (type != MessageType::CLOSE && !upgraded.load()) {
-            LOG_ERROR("WebSocket not fully upgraded yet");
+            log_error("WebSocket not fully upgraded yet");
             return false;
         }
         bufferevent_lock(m_bev);
@@ -411,7 +411,7 @@ bool WebSocketClient::sendData(const void* data,
         return true;
     }
 
-    LOG_ERROR("Cannot send in state %d", int(state));
+    log_error("Cannot send in state %d", int(state));
     return false;
 }
 
@@ -494,7 +494,7 @@ void WebSocketClient::sendError(int error_code, const std::string& error_message
     if (callback) {
         callback(error_code, error_message);
     } else {
-        LOG_ERROR("Unhandled error: %s", error_message.c_str());
+        log_error("Unhandled error: %s", error_message.c_str());
     }
 }
 
@@ -506,7 +506,7 @@ void WebSocketClient::sendError(ErrorCode code, const std::string& message) {
 // Send a WebSocket close frame with code and reason
 bool WebSocketClient::close(int code, const std::string& reason) {
     if (!upgraded.load() || !m_bev) {
-        LOG_ERROR("Not connected or WebSocket not upgraded");
+        log_error("Not connected or WebSocket not upgraded");
         return false;
     }
     if (sent_close.exchange(true)) {
@@ -543,7 +543,7 @@ bool WebSocketClient::close(CloseCode code, const std::string& reason) {
 void WebSocketClient::sendHandshakeRequest() {
     if (!m_bev) return;
 
-    LOG_DEBUG("Sending WebSocket handshake request");
+    log_debug("Sending WebSocket handshake request");
 
     bufferevent_lock(m_bev);
 
@@ -592,7 +592,7 @@ void WebSocketClient::cleanup() {
     if (cleanup_complete.load()) return;
     cleanup_complete.store(true);
 
-    LOG_DEBUG("cleanup: entered");
+    log_debug("cleanup: entered");
 
     // Clean up events first
     if (ping_event) {
@@ -658,7 +658,7 @@ void WebSocketClient::cleanup() {
     }
     state_cv.notify_all();
 
-    LOG_DEBUG("cleanup: exiting");
+    log_debug("cleanup: exiting");
 }
 
 /**
@@ -691,7 +691,7 @@ void WebSocketClient::send(evbuffer* buf,
                                  type == MessageType::PONG);
 
     if (is_control_frame && raw_len > 125) {
-        LOG_ERROR("Control frame too large (%zu bytes)", raw_len);
+        log_error("Control frame too large (%zu bytes)", raw_len);
         return;
     }
 
@@ -737,7 +737,7 @@ void WebSocketClient::send(evbuffer* buf,
             payload_ptr = compressed_buf.data();
 
         } else {
-            LOG_ERROR("Compression failed (%d), sending raw", ret);
+            log_error("Compression failed (%d), sending raw", ret);
             deflateReset(&deflate_stream);
             payload_ptr = original_ptr;  // Explicit fallback
             payload_len = original_len;
@@ -750,7 +750,7 @@ void WebSocketClient::send(evbuffer* buf,
             int init_ret = deflateInit2(&deflate_stream, compression_level, Z_DEFLATED,
                         -client_max_window_bits, 8, Z_DEFAULT_STRATEGY);
             if (init_ret != Z_OK) {
-                LOG_ERROR("deflateInit2 after context takeover failed (%d)", init_ret);
+                log_error("deflateInit2 after context takeover failed (%d)", init_ret);
                 payload_ptr = original_ptr;
                 payload_len = original_len;
                 do_compress = false;
@@ -779,7 +779,7 @@ void WebSocketClient::send(evbuffer* buf,
         b2 |= 127;
     }
 
-    LOG_DEBUG("send frame: b1=0x%02X b2=0x%02X len=%zu compress=%d\n", b1, b2, payload_len, do_compress);
+    log_debug("send frame: b1=0x%02X b2=0x%02X len=%zu compress=%d\n", b1, b2, payload_len, do_compress);
 
     auto out = buf;
 
@@ -921,10 +921,10 @@ void WebSocketClient::receive(evbuffer* buf) {
                 handlePingFrame(data, header_len, payload_len);
                 break;
             case 0x0A:
-                LOG_DEBUG("Received pong frame");
+                log_debug("Received pong frame");
                 break;
             default:
-                LOG_ERROR("Unknown opcode: %d", opcode);
+                log_error("Unknown opcode: %d", opcode);
                 close(CloseCode::PROTOCOL_ERROR, "Unsupported opcode");
                 break;
         }
@@ -958,7 +958,7 @@ void WebSocketClient::receive(evbuffer* buf) {
  */
 void WebSocketClient::handleContinuationFrame(unsigned char* data, size_t header_len, uint64_t payload_len, int fin) {
     if (!message_in_progress) {
-        LOG_ERROR("Received continuation frame without initial frame");
+        log_error("Received continuation frame without initial frame");
         close(CloseCode::PROTOCOL_ERROR, "continuation frame without initial frame"); //POLICY_VIOLATION
         return;
     }
@@ -971,14 +971,14 @@ void WebSocketClient::handleContinuationFrame(unsigned char* data, size_t header
     // Only validate UTF-8 if this is an uncompressed text message
     if (!compressed_message_in_progress && fragmented_opcode == 0x01) {
         if (!utf8Validator.validateChunk(data + header_len, payload_len)) {
-            LOG_ERROR("Invalid UTF-8 in continuation frame");
+            log_error("Invalid UTF-8 in continuation frame");
             close(CloseCode::INVALID_PAYLOAD, "Invalid UTF-8 in text message");
             return;
         }
     }
         
     if (fin) {
-        // LOG_DEBUG("Final fragment received, processing complete message");
+        // log_debug("Final fragment received, processing complete message");
         if (compressed_message_in_progress) {
             std::vector<uint8_t> output;
             bool ok = decompressMessage(fragmented_message.data(), fragmented_message.size(), output);
@@ -993,7 +993,7 @@ void WebSocketClient::handleContinuationFrame(unsigned char* data, size_t header
             case 0x01: {
                 // Finalize the DFA
                 if (!utf8Validator.validateFinal()) {
-                    LOG_ERROR("Invalid UTF-8 at end of fragmented text");
+                    log_error("Invalid UTF-8 at end of fragmented text");
                     close(CloseCode::INVALID_PAYLOAD,
                             "Invalid UTF-8 in text message");
                     return;
@@ -1002,7 +1002,7 @@ void WebSocketClient::handleContinuationFrame(unsigned char* data, size_t header
                                     fragmented_message.end());
 
                 utf8Validator.reset();
-                //LOG_DEBUG("Received complete text message: %s", message.c_str());
+                //log_debug("Received complete text message: %s", message.c_str());
                 MessageCallback callback;
                 {
                     std::lock_guard<std::mutex> lock(callback_mutex);
@@ -1015,7 +1015,7 @@ void WebSocketClient::handleContinuationFrame(unsigned char* data, size_t header
                 break;
             }
             case 0x02: {
-                //LOG_DEBUG("Received complete binary message: %zu bytes", fragmented_message.size());
+                //log_debug("Received complete binary message: %zu bytes", fragmented_message.size());
                 BinaryCallback callback;
                 {
                     std::lock_guard<std::mutex> lock(callback_mutex);
@@ -1027,7 +1027,7 @@ void WebSocketClient::handleContinuationFrame(unsigned char* data, size_t header
                 break;
             }
             default:
-                LOG_ERROR("Unknown fragmented opcode: %d", fragmented_opcode);
+                log_error("Unknown fragmented opcode: %d", fragmented_opcode);
         }
         
         // Reset fragmentation state
@@ -1071,7 +1071,7 @@ void WebSocketClient::handleContinuationFrame(unsigned char* data, size_t header
  */
 void WebSocketClient::handleDataFrame(unsigned char* data, size_t header_len, uint64_t payload_len, int fin, int opcode, int rsv1) {
     if (message_in_progress) {
-        LOG_ERROR("Received new data frame (opcode %d) while expecting a continuation frame. Closing connection.", opcode);
+        log_error("Received new data frame (opcode %d) while expecting a continuation frame. Closing connection.", opcode);
         close(CloseCode::PROTOCOL_ERROR, "Received new data frame when expecting continuation frame.");
         return;
     }
@@ -1091,13 +1091,13 @@ void WebSocketClient::handleDataFrame(unsigned char* data, size_t header_len, ui
             // Validate this first chunk
             if (!utf8Validator.validateChunk(data + header_len,
                                                 payload_len)) {
-                LOG_ERROR("Invalid UTF-8 in initial fragment");
+                log_error("Invalid UTF-8 in initial fragment");
                 close(CloseCode::INVALID_PAYLOAD,
                         "Invalid UTF-8 in text message");
                 return;
             }
         }
-        //LOG_DEBUG("Started fragmented message, opcode: %d, fragment size: %ld", opcode, payload_len);
+        //log_debug("Started fragmented message, opcode: %d, fragment size: %ld", opcode, payload_len);
     } else {
         // Single unfragmented message
         const uint8_t* msg_data = data + header_len;
@@ -1119,14 +1119,14 @@ void WebSocketClient::handleDataFrame(unsigned char* data, size_t header_len, ui
             utf8Validator.reset();
             if (!utf8Validator.validateChunk(msg_data, msg_len) ||
                 !utf8Validator.validateFinal()) {
-                LOG_ERROR("Invalid UTF-8 in unfragmented text");
+                log_error("Invalid UTF-8 in unfragmented text");
                 close(CloseCode::INVALID_PAYLOAD,
                         "Invalid UTF-8 in text message");
                 return;
             }
 
             std::string message((char*)msg_data, msg_len);
-            // LOG_DEBUG("Received message: %s", message.c_str());
+            // log_debug("Received message: %s", message.c_str());
             MessageCallback callback;
             {
                 std::lock_guard<std::mutex> lock(callback_mutex);
@@ -1136,7 +1136,7 @@ void WebSocketClient::handleDataFrame(unsigned char* data, size_t header_len, ui
                 callback(message);
             }
         } else {
-            // LOG_DEBUG("Received binary message: %ld bytes", payload_len);
+            // log_debug("Received binary message: %ld bytes", payload_len);
             BinaryCallback callback;
             {
                 std::lock_guard<std::mutex> lock(callback_mutex);
@@ -1179,7 +1179,7 @@ void WebSocketClient::handleDataFrame(unsigned char* data, size_t header_len, ui
  *          - Locks bufferevent for output
  */
 void WebSocketClient::handleCloseFrame(unsigned char* data, size_t header_len, uint64_t payload_len) {
-    LOG_DEBUG("Received close frame");
+    log_debug("Received close frame");
 
     //got_remote_close = true;
     {
@@ -1195,12 +1195,12 @@ void WebSocketClient::handleCloseFrame(unsigned char* data, size_t header_len, u
 
         // RFC 6455 Section 5.5.1
         if (payload_len > 125) {
-            LOG_ERROR("Close frame too large (%zu bytes)", payload_len);
+            log_error("Close frame too large (%zu bytes)", payload_len);
             close_code = 1002;
             protocol_error = true;
         }
         else if (payload_len == 1) {
-            LOG_ERROR("Invalid close frame: payload length is 1 (must be 0 or >=2)");
+            log_error("Invalid close frame: payload length is 1 (must be 0 or >=2)");
             close_code = 1002;
             protocol_error = true;
         }
@@ -1214,7 +1214,7 @@ void WebSocketClient::handleCloseFrame(unsigned char* data, size_t header_len, u
             if (!((close_code >= 1000 && close_code <= 1011 && 
                 close_code != 1004 && close_code != 1005 && close_code != 1006) ||
                 (close_code >= 3000 && close_code <= 4999))) {
-                LOG_ERROR("Received invalid close code: %d", close_code);
+                log_error("Received invalid close code: %d", close_code);
                 close_code = 1002;
                 protocol_error = true;
             }
@@ -1225,7 +1225,7 @@ void WebSocketClient::handleCloseFrame(unsigned char* data, size_t header_len, u
                 size_t reason_len = std::min(payload_len - 2, (size_t)123);  // RFC limit
 
                 if (!isValidUtf8(reason_ptr, reason_len)) {
-                    LOG_ERROR("Close reason is not valid UTF-8");
+                    log_error("Close reason is not valid UTF-8");
                     close_code = 1002;
                     protocol_error = true;
                 } else {
@@ -1267,9 +1267,9 @@ void WebSocketClient::handleCloseFrame(unsigned char* data, size_t header_len, u
  * \see RFC 6455 Section 5.5.2 (PING/PONG Control Frames)
  */
 void WebSocketClient::handlePingFrame(unsigned char* data, size_t header_len, uint64_t payload_len) {
-    LOG_DEBUG("Received ping frame");
+    log_debug("Received ping frame");
     if (payload_len > 125) {
-        LOG_ERROR("Protocol violation: received ping frame with payload length > 125 bytes");            
+        log_error("Protocol violation: received ping frame with payload length > 125 bytes");            
         close(CloseCode::PROTOCOL_ERROR, "Control frame payload too large");            
         return;
     }
@@ -1283,7 +1283,7 @@ void WebSocketClient::handlePingFrame(unsigned char* data, size_t header_len, ui
         payload_len,
         MessageType::PONG);
     } else {
-        LOG_ERROR("Cannot get output buffer");
+        log_error("Cannot get output buffer");
     }
 
     bufferevent_unlock(m_bev);
@@ -1331,7 +1331,7 @@ void WebSocketClient::timeoutCallback(evutil_socket_t /*fd*/, short /*event*/, v
         
     if (client->connection_state != ConnectionState::CONNECTED &&
         client->connection_state != ConnectionState::FAILED) {
-        LOG_ERROR("Connection timeout");
+        log_error("Connection timeout");
         client->sendError(ErrorCode::CONNECT_FAILED, "Connection timeout");
     }
 }
@@ -1367,7 +1367,7 @@ void WebSocketClient::sendPing() {
  * \param bev libevent bufferevent containing received data
  */
 void WebSocketClient::handleRead(bufferevent* bev) {
-    //LOG_DEBUG("Read callback");
+    //log_debug("Read callback");
     auto input = bufferevent_get_input(bev);
     if (!upgraded.load()) {
         
@@ -1384,7 +1384,7 @@ void WebSocketClient::handleRead(bufferevent* bev) {
         if (resp.rfind("HTTP/1.1 101", 0) != 0 ||
             resp.find("Sec-WebSocket-Accept:") == std::string::npos)
         {
-            LOG_ERROR("WebSocket upgrade failed");
+            log_error("WebSocket upgrade failed");
             {
                 std::lock_guard<std::mutex> lock(state_mutex);
                 connection_state = ConnectionState::FAILED;
@@ -1405,7 +1405,7 @@ void WebSocketClient::handleRead(bufferevent* bev) {
             std::string extLine(extPos, extEnd - extPos);
             if (extLine.find("permessage-deflate") != std::string::npos) {
                 negotiated = true;
-                LOG_DEBUG("Compression negotiated: %s", extLine.c_str());
+                log_debug("Compression negotiated: %s", extLine.c_str());
 
                 // context-takeover
                 client_no_context_takeover = extLine.find("client_no_context_takeover") != std::string::npos;
@@ -1423,7 +1423,7 @@ void WebSocketClient::handleRead(bufferevent* bev) {
 
                 // initialize zlib streams with negotiated bits
                 if (!initializeCompression()) {
-                    LOG_ERROR("Failed to initialize compression");
+                    log_error("Failed to initialize compression");
                     use_compression = false;
                     sendError(ErrorCode::NOT_SUPPORTED, "Compression negotiation failed");
                 } else {
@@ -1433,7 +1433,7 @@ void WebSocketClient::handleRead(bufferevent* bev) {
         }
 
         if (!negotiated) {
-            LOG_DEBUG("Compression not negotiated or disabled by user");
+            log_debug("Compression not negotiated or disabled by user");
             use_compression = false;
         }
 
@@ -1447,7 +1447,7 @@ void WebSocketClient::handleRead(bufferevent* bev) {
         state_cv.notify_all();
 
         // Send Pending Queue
-        LOG_DEBUG("Flushing %zu queued messages…", send_queue.size());
+        log_debug("Flushing %zu queued messages…", send_queue.size());
         flushSendQueue();
 
         OpenCallback callback;
@@ -1459,10 +1459,10 @@ void WebSocketClient::handleRead(bufferevent* bev) {
             callback();
         }
 
-        LOG_DEBUG("WebSocket connection upgraded successfully");
+        log_debug("WebSocket connection upgraded successfully");
 
         if (evbuffer_get_length(input) > 0) {
-            //LOG_DEBUG("Processing leftover frame data after upgrade");
+            //log_debug("Processing leftover frame data after upgrade");
             receive(input);
         }
 
@@ -1476,7 +1476,7 @@ void WebSocketClient::handleRead(bufferevent* bev) {
  * \brief Write callback
  */
 void WebSocketClient::handleWrite(bufferevent* /*bev*/) {
-    //LOG_DEBUG("Write callback");
+    //log_debug("Write callback");
 }
 
 /**
@@ -1512,7 +1512,7 @@ void WebSocketClient::handleWrite(bufferevent* /*bev*/) {
  */
 void WebSocketClient::handleEvent(bufferevent* bev, short events) {
     if (events & BEV_EVENT_CONNECTED) {
-        LOG_DEBUG("Connected to server");
+        log_debug("Connected to server");
 
         if (secure) {
 #ifdef USE_TLS
@@ -1535,18 +1535,18 @@ void WebSocketClient::handleEvent(bufferevent* bev, short events) {
                 if (!tlsOptions.disableHostnameValidation) {
                     // Hostname check is already set via X509_VERIFY_PARAM_set1_host
                     // So no need to manually check again here
-                    LOG_DEBUG("Hostname verification succeeded (via OpenSSL)");
+                    log_debug("Hostname verification succeeded (via OpenSSL)");
                 } else {
-                    LOG_DEBUG("Hostname verification disabled by config");
+                    log_debug("Hostname verification disabled by config");
                 }
             } else {
-                LOG_DEBUG("Peer certificate verification disabled by config");
+                log_debug("Peer certificate verification disabled by config");
             }
 #endif
         }
         
         // TCP connected, but still need WebSocket handshake
-        LOG_DEBUG("TCP connection established, starting WebSocket handshake");
+        log_debug("TCP connection established, starting WebSocket handshake");
 
         sendHandshakeRequest();
 
@@ -1560,7 +1560,7 @@ void WebSocketClient::handleEvent(bufferevent* bev, short events) {
             if (ssl_err) {
                 char err_buf[512];
                 ERR_error_string_n(ssl_err, err_buf, sizeof(err_buf));
-                LOG_ERROR("TLS error: %.240s", err_buf);
+                log_error("TLS error: %.240s", err_buf);
                 message = err_buf;
                 sendError(ErrorCode::SSL_ERROR, message);
                 {
@@ -1578,7 +1578,7 @@ void WebSocketClient::handleEvent(bufferevent* bev, short events) {
         message = error_code != 0
             ? formatSocketError(error_code)
             : "Connection error";
-        LOG_ERROR("%s", message.c_str());
+        log_error("%s", message.c_str());
         sendError(ErrorCode::IO, message);
 
         {
@@ -1595,7 +1595,7 @@ void WebSocketClient::handleEvent(bufferevent* bev, short events) {
         close_code = static_cast<int>(CloseCode::NORMAL);
         ConnectionState new_state = ConnectionState::DISCONNECTED;
 
-        LOG_DEBUG("%s", message.c_str());
+        log_debug("%s", message.c_str());
 
         {
             std::lock_guard<std::mutex> lock(state_mutex);
@@ -1614,7 +1614,7 @@ void WebSocketClient::handleEvent(bufferevent* bev, short events) {
         }
 
     } else {
-        LOG_DEBUG("Event: %d", events);
+        log_debug("Event: %d", events);
     }
 }
 
@@ -1643,7 +1643,7 @@ bool WebSocketClient::initializeCompression() {
     memset(&inflate_stream, 0, sizeof(inflate_stream));
     int ret = inflateInit2(&inflate_stream, -server_max_window_bits);
     if (ret != Z_OK) {
-        LOG_ERROR("Failed to initialize inflate: %d", ret);
+        log_error("Failed to initialize inflate: %d", ret);
         return false;
     }
 
@@ -1653,7 +1653,7 @@ bool WebSocketClient::initializeCompression() {
     ret = deflateInit2(&deflate_stream, compression_level, Z_DEFLATED, -client_max_window_bits, 8, Z_DEFAULT_STRATEGY);
 
     if (ret != Z_OK) {
-        LOG_ERROR("Failed to initialize deflate: %d", ret);
+        log_error("Failed to initialize deflate: %d", ret);
         if (inflate_initialized) {
             inflateEnd(&inflate_stream);
             inflate_initialized = false;
@@ -1663,7 +1663,7 @@ bool WebSocketClient::initializeCompression() {
 
     deflate_initialized = true;
     
-    LOG_DEBUG("Compression initialized successfully");
+    log_debug("Compression initialized successfully");
     return true;
 }
 
@@ -1754,7 +1754,7 @@ std::string WebSocketClient::getOpenSSLError() {
  * \return true if TLS initialization succeeded, false on any error
  *
  * \throw No explicit throws, but reports errors via:
- *        - LOG_ERROR for OpenSSL failures
+ *        - log_error for OpenSSL failures
  *        - sendError() with ErrorCode::TLS_INIT_FAILED
  *
  * \note On failure, cleans up any allocated SSL context
@@ -1768,7 +1768,7 @@ bool WebSocketClient::initTLS() {
 #endif
     ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
-        LOG_ERROR("SSL_CTX_new() failed");
+        log_error("SSL_CTX_new() failed");
         sendError(ErrorCode::TLS_INIT_FAILED, "SSL context creation failed: " + getOpenSSLError());
         return false;
     }
@@ -2032,14 +2032,14 @@ bool WebSocketClient::decompressMessage(
     std::vector<uint8_t>& output
 ) {
     if (!inflate_initialized) {
-        LOG_ERROR("Decompressor not initialized");
+        log_error("Decompressor not initialized");
         return false;
     }
 
     if (server_no_context_takeover) {
         int ret = inflateReset(&inflate_stream);
         if (ret != Z_OK) {
-            LOG_ERROR("inflateReset failed: %d (%s)", ret, zError(ret));
+            log_error("inflateReset failed: %d (%s)", ret, zError(ret));
             return false;
         }
     }
@@ -2068,7 +2068,7 @@ bool WebSocketClient::decompressMessage(
         ret = inflate(&inflate_stream, Z_SYNC_FLUSH);
 
         if (ret != Z_OK && ret != Z_BUF_ERROR && ret != Z_STREAM_END) {
-            LOG_ERROR("inflate failed: %d (%s)", ret, zError(ret));
+            log_error("inflate failed: %d (%s)", ret, zError(ret));
             return false;
         }
 
