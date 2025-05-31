@@ -22,7 +22,7 @@ Shared builds are available via `-DBUILD_SHARED_LIBS=ON`, but static is the defa
 
 - Supported flags
   - -DUSE_TLS=ON, **OFF** by default (TLS support)
-  - -DUSE_DEBUG=ON, **OFF** by default (verbose debugging, logs to stdout)
+  - -DLIBWSC_USE_DEBUG=ON, **OFF** by default (verbose debugging, logs to stdout|stderr or syslog)
   - -DBUILD_SHARED_LIBS=ON, **OFF** by default
 
 The easiest way is to clone the repository and use it in your cmake project via `add_sudirectory()`. You can also build a shared library:
@@ -36,7 +36,7 @@ mkdir build && cd build
 cmake .. \
     -DCMAKE_BUILD_TYPE=Release  \
     -DUSE_TLS=ON                \
-    -DUSE_DEBUG=ON              \
+    -DLIBWSC_USE_DEBUG=ON       \
     -DBUILD_SHARED_LIBS=ON
 make
 sudo make install
